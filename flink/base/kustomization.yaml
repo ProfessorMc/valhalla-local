@@ -7,8 +7,9 @@ resources:
 
 helmCharts:
   - name: flink
-    repo: https://charts.bitnami.com/bitnami
+    repo: oci://registry-1.docker.io/bitnamicharts
     version: 1.4.0
+    includeCRDs: true
     releaseName: flink
     namespace: flink
     valuesFile: values.yaml
