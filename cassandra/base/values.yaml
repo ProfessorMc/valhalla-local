@@ -1,0 +1,626 @@
+extraEnvVars:
+  - name: CASSANDRA_CFG_YAML_materialized_views_enabled
+    value: 'true'
+  - name: CASSANDRA_AUTHENTICATOR
+    value: AllowAllAuthenticator
+  - name: CASSANDRA_AUTHORIZER
+    value: AllowAllAuthorizer
+    
+initDB:
+  init.cql: | 
+    CREATE KEYSPACE IF NOT EXISTS rts_data
+      WITH REPLICATION = { 
+      'class' : 'SimpleStrategy', 
+      'replication_factor' : 1 
+    }  AND durable_writes = true;
+
+    CREATE KEYSPACE IF NOT EXISTS rts_system
+      WITH REPLICATION = { 
+      'class' : 'SimpleStrategy', 
+      'replication_factor' : 1 
+    }  AND durable_writes = true;
+
+    CREATE TABLE IF NOT EXISTS rts_system.growingObjects(
+        wellId          UUID,
+        ObjectId        UUID,
+        dTimGrowing     Timestamp,
+        primary key (ObjectId)
+    );
+
+    USE rts_data;
+
+    CREATE TABLE IF NOT EXISTS well (   
+        rowkey text,    -- row key will be "well". This table will have one row.
+        wellid uuid,
+        well_name text,
+        num_govt text,
+        num_api text,
+        operator text,
+        dtimlastchange timestamp,
+        dtimcreation timestamp, 
+        sourcename text,
+        storeduplicateindex text,
+        PRIMARY KEY (rowkey,wellid)
+    );
+
+
+    CREATE TABLE IF NOT EXISTS object_leaf (
+        objectid uuid,
+        size text,  -- possible values (s-m-l).
+        leaf text,
+        value text,
+        leaf_klass text,
+        wellid uuid STATIC,
+        wellboreid uuid STATIC,
+        object_klass text STATIC,
+        PRIMARY KEY (objectid, size, leaf)
+    );
+
+
+    CREATE TABLE IF NOT EXISTS object_json (
+      objectid uuid,
+      size text,
+      dtimlastchange timestamp,
+      Json text,
+      wellid uuid STATIC,
+      wellboreid uuid STATIC,
+      object_klass text STATIC,
+      dtimcreation timestamp STATIC,
+    PRIMARY KEY (objectid, size, dtimlastchange)
+    );
+
+    CREATE TABLE IF NOT EXISTS wellbore (   
+        rowkey text,        -- row key will be "wellbore". This table will have one row.
+        wellid uuid,
+        wellboreid uuid,
+        well_name text,
+        wellbore_name text,
+        dtimlastchange timestamp,
+        PRIMARY KEY (rowkey,wellid, wellboreid)
+    ) WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+
+
+    CREATE TABLE IF NOT EXISTS wellbore_details (
+        wellid uuid,
+        wellboreid uuid ,
+        leaf text,
+        value text,
+        leaf_klass text,
+        object_klass text STATIC,
+        PRIMARY KEY (wellid , wellboreid, leaf)
+    );
+
+    CREATE TABLE IF NOT EXISTS idsbywellbore (
+        wellboreid uuid,
+        object_klass text,
+        isgrowing boolean,
+        objectid uuid,
+        object_name text,
+        dtimlastchange timestamp,
+        indextype text,
+        wellbore_name text static,
+        well_name text static,
+        wellid uuid static,
+        PRIMARY KEY (wellboreid, object_klass, isgrowing, objectid)
+    ) WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+
+    CREATE TABLE IF NOT EXISTS trajectory_station_leaf (
+        trajectoryid uuid,
+        stationid text,
+        leaf text,
+        depth double,
+        PRIMARY KEY (trajectoryid, stationid)
+    );
+
+    CREATE TABLE IF NOT EXISTS growingobject (
+        rowkey text,
+        object_klass text,
+        objectid uuid,
+        dtimlastchange timestamp,
+        wellboreid uuid,
+        name_well text, 
+        name_wellbore text, 
+        name_object text, 
+        wellid uuid,
+    PRIMARY KEY (rowkey,  objectid))
+    WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+
+
+    CREATE TABLE IF NOT EXISTS minmaxbyobject (
+        objectid uuid,
+        object_klass text,
+        min double,
+        max double,
+        PRIMARY KEY (objectid)
+    ) 
+    WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+
+
+    CREATE TABLE IF NOT EXISTS message_history (
+        correlationid uuid,
+        message_blob text,
+        message_time timestamp,
+        PRIMARY KEY (correlationid)
+    )
+    WITH default_time_to_live = 172800
+    AND gc_grace_seconds = 0;
+
+
+    CREATE TABLE IF NOT EXISTS message_history_index (
+        calendar_date int,
+        message_time timestamp,
+        correlationid uuid,
+        PRIMARY KEY (calendar_date, message_time)
+    )
+    WITH DEFAULT_TIME_TO_LIVE = 172800
+    AND GC_GRACE_SECONDS = 0;
+
+
+    CREATE TABLE IF NOT EXISTS correlationidbyobjectid (
+        objectid text,
+        message_time timestamp,
+        correlationid uuid,
+        PRIMARY KEY (objectid, message_time)
+    )
+    WITH DEFAULT_TIME_TO_LIVE = 172800
+    AND GC_GRACE_SECONDS = 0;
+
+
+    CREATE TABLE IF NOT EXISTS insitertsidmapping(
+        insiteobjectid text,
+        rtsid UUID,
+        object_klass text,
+        object_meta text,
+        PRIMARY KEY (insiteobjectid, rtsid)
+    );
+
+    CREATE MATERIALIZED VIEW IF NOT EXISTS rtsinsiteidmapping AS
+        SELECT rtsid, object_meta, insiteobjectid, object_klass FROM insitertsidmapping
+        where rtsid IS NOT NULL AND insiteobjectid IS NOT NULL AND object_klass IS NOT NULL AND object_meta IS NOT NULL 
+    PRIMARY KEY (rtsid, object_meta, insiteobjectid);
+
+    CREATE TABLE IF NOT EXISTS raw_ts(
+        sensorid uuid,
+        variableid text,
+        type text,
+        activity text,
+        event_time timestamp, //unix time
+        persisted_time timestamp, //for version history/audit purposes
+        value text,
+        uom text STATIC,
+        uom_class text STATIC,
+        bitoffset_value double STATIC,  
+        bitoffset_uom text STATIC,
+        variable_friendly text STATIC,
+        wellid uuid STATIC, //unnecessary but helpful safe guard
+        wellboreid uuid STATIC,
+        PRIMARY KEY((sensorid, variableid, type, activity), event_time, persisted_time)
+    );
+    //Data will be stored twice in each table: Once in 'all' activity and once in its specific activity
+
+    CREATE TABLE IF NOT EXISTS log_time(
+        sensorid uuid,
+        variableid text,
+        type text, //realtime/insite-read
+        activity text,
+        event_time timestamp, //unix time
+        value text,
+        datatype text STATIC,
+        uom text STATIC,
+        uom_class text STATIC,
+        bitoffset_value double STATIC,
+        bitoffset_uom text STATIC,
+        variable_friendly text STATIC,
+        wellid uuid STATIC, //unnecessary but helpful safe guard
+        wellboreid uuid STATIC,
+        PRIMARY KEY((sensorid, variableid, type, activity), event_time)
+    );
+        
+    CREATE TABLE IF NOT EXISTS log_depth(
+        sensorid uuid,
+        variableid text,
+        type text, //realtime/calculated/recalculated
+        activity text,
+        event_depth double, 
+        value text,
+        datatype text STATIC,
+        uom text STATIC, 
+        uom_class text STATIC,
+        bitoffset_value double STATIC,  
+        bitoffset_uom text STATIC,
+        variable_friendly text STATIC,  
+        wellid uuid STATIC, //unnecessary but helpful safe guard
+        wellboreid uuid STATIC,
+        PRIMARY KEY((sensorid, variableid, type, activity), event_depth)
+    );
+
+
+    //the log_view is the definition of a view and contains the information necessary to create the cql statements to bind variables into mnemonics, aka from log_time/depth to mnemonic_time/depth
+    //ASSUMPTION: ranges of actual logs per mnemonic do not overlap
+
+    CREATE TABLE IF NOT EXISTS log_view(
+        logid UUID,
+        mnemonic text,
+        mnemonic_alias text,
+        views text, //json string
+        mnemonicid uuid,
+        minindex_depth double,
+        maxindex_depth double,
+        minindex_time timestamp,
+        maxindex_time timestamp,
+        wellid uuid STATIC,
+        wellboreid UUID STATIC, 
+        PRIMARY KEY(logid, mnemonic)
+    )WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+        
+
+    CREATE TABLE IF NOT EXISTS glimpse_coordinates(
+        sensorid uuid,
+        variableid text,
+        type text,
+        activity text,
+        logid uuid,
+        mnemonic text,
+        mnemonic_alias text,
+        mnemonicId uuid,
+        indexType text,
+        is_read_to_eod Boolean,
+        bitoffset_uom text,
+        bitoffset_value double,
+        rawstart_depth double,
+        rawstop_depth double,
+        calibratedstart_depth double,
+        calibratedstop_depth double,
+        rawstart_time timestamp,
+        rawstop_time timestamp,
+        calibratedstart_time timestamp,
+        calibratedstop_time timestamp,
+    PRIMARY KEY ((sensorid, variableid, type, activity),logid,mnemonic)
+    );
+
+    CREATE TABLE IF NOT EXISTS minmax_by_logid_mnemonic (
+        logid uuid,
+        mnemonic text,
+        min double,
+        max double,
+        index_type text,
+    PRIMARY KEY (logid, mnemonic)
+    ) WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+
+
+    CREATE TABLE IF NOT EXISTS geologyinterval_depth(
+        objectid       UUID,
+        depth          double,          // geologyInterval.mdTop 
+        uid            Text,            // UID for parameter or geologyInterval
+        json           text,
+        PRIMARY KEY (objectid,depth,uid)
+    );
+
+    CREATE TABLE IF NOT EXISTS geologyinterval_index(
+        objectid       UUID,
+        uid            Text,            // UID for parameter or geologyInterval
+        depth          double,          // geoLoicalInterval.mdTop
+        bottomdepth    double,
+        PRIMARY KEY (objectid,uid)
+    );
+
+    CREATE TABLE IF NOT EXISTS parameter_depth(
+        objectid       UUID,
+        depth          double,          // Parameter.mdTop
+        uid            Text,            // UID for parameter or geologyInterval
+        json           text,
+        PRIMARY KEY (objectid,depth,uid)
+    );
+
+    CREATE TABLE IF NOT EXISTS parameter_index(
+        objectid       UUID,
+        uid            Text,            // UID for parameter or geologocalInterval
+        depth          double,          // Parameter.mdTop
+        bottomdepth    double,
+        PRIMARY KEY(objectid,uid)
+    );
+
+    CREATE TABLE IF NOT EXISTS idsByChangeTime (
+        wellid UUID,
+        objecttype text,
+        changetype text,        -- add, update, delete, all
+        dtimlastchange timestamp,
+        objectid UUID,
+        value Text,
+        PRIMARY KEY(wellid, objecttype, changetype, dtimlastchange, objectid)
+    ) WITH default_time_to_live= 86400;
+
+    CREATE TABLE IF NOT EXISTS ChangeLog(
+        objectId uuid,      // Id of the object for which this changeLog row is maintained.
+        changetype Text,    // add, update, delete, all (writing twice)
+        changetime TimeUUID,
+        Changeheader Text,
+        Changehistory Text,
+        changelogid UUID static,
+        dtimcreation timestamp static,
+        PRIMARY KEY (objectid, changetype, changetime)
+    ) WITH default_time_to_live= 86400;
+
+    CREATE TABLE IF NOT EXISTS parenttochildids (
+        parentid uuid,
+        childid text,
+        parent_object_klass text static,
+        child_object_klass text,   
+        PRIMARY KEY (parentid, childid)
+    );
+
+    CREATE TABLE IF NOT EXISTS createdatebyobjectid(
+        objectid uuid,
+        object_klass text,
+        dtimcreation timestamp,
+        PRIMARY KEY (objectid)
+    );
+
+    CREATE TABLE IF NOT EXISTS EventLogByEventCode(
+        objectid uuid,
+        eventCode text,
+        eventId uuid,
+        eventJson text,
+        eventClass text,
+        PRIMARY KEY (objectid, eventCode, eventId)
+    );
+
+    CREATE TABLE IF NOT EXISTS EventLogByEventTime(
+        objectid uuid,
+        eventTime TimeUUID,
+        eventJson text,
+        eventClass text,
+        PRIMARY KEY (objectid, eventTime)
+    );
+
+    CREATE TABLE IF NOT EXISTS EventLog_index(
+        objectid uuid,
+        eventId uuid,
+        eventTime TimeUUID,
+        PRIMARY KEY (objectid, eventId)
+    );
+
+    CREATE TABLE IF NOT EXISTS WellsByCustomerName (
+        operator text,
+        wellid uuid,
+        well_name text,
+        PRIMARY KEY (operator, wellid)
+    )WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+
+    CREATE TABLE IF NOT EXISTS rtsschemaversion (   
+        rowkey text, 
+        version text,
+        description text,
+        release_date timestamp,
+        release_notes text,
+        PRIMARY KEY (rowkey,version)
+    );
+
+    CREATE TABLE IF NOT EXISTS logmnemonicrecentvalue(
+        logid uuid,
+        mnemonic_alias text,
+        mnemonic text,
+        mnemonic_value text,
+        uom text,
+        depth_index double,
+        time_index timestamp,
+        unit_type text,
+        data_type text,
+        dtimlastchange timestamp,
+        iv_elapsed_time timestamp, 
+        iv_thd double, 
+        iv_tst double, 
+        iv_tvd double, 
+        iv_tvdss double, 
+        iv_tvt double, 
+        iv_vertical_sec double,
+    PRIMARY KEY (logid, mnemonic_alias)
+    ) WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+
+    CREATE TABLE IF NOT EXISTS logdescriptors (
+        wellboreid uuid,
+        run text,
+        record text,
+        type text,
+        variable text,
+        activity text,
+        sensorid uuid,
+        PRIMARY KEY (wellboreid, run, record, type, variable,activity,sensorid)
+    );
+
+    //- table to store alarms.
+    CREATE TABLE IF NOT EXISTS alarms (
+        objectid uuid,
+        wellid uuid,
+        wellboreid uuid,
+        logid uuid,
+        alarmtype text,
+        dtimlastchange timestamp,
+        enabled boolean,
+        alarmjson text,
+        PRIMARY KEY (objectid)
+    ) WITH bloom_filter_fp_chance = 0.01
+    AND comment = ''
+    AND default_time_to_live = 0
+    AND gc_grace_seconds = 864000
+    AND max_index_interval = 2048
+    AND memtable_flush_period_in_ms = 0
+    AND min_index_interval = 128
+    AND speculative_retry = '99.0PERCENTILE'
+    AND caching = {
+        'keys' : 'ALL',
+        'rows_per_partition' : 'NONE'
+    }
+    AND compaction = {
+        'bucket_high' : 1.5,
+        'bucket_low' : 0.5,
+        'class' : 'SizeTieredCompactionStrategy',
+        'enabled' : true,
+        'max_threshold' : 32,
+        'min_sstable_size' : 50,
+        'min_threshold' : 4,
+        'tombstone_compaction_interval' : 86400,
+        'tombstone_threshold' : 0.2,
+        'unchecked_tombstone_compaction' : false
+    };
+
+    //- table for storing alarm ids referenced by logid.
+    CREATE TABLE IF NOT EXISTS alarmidsbylog (
+        logid uuid,
+        objectid uuid,
+        dtimlastchange timestamp,
+        PRIMARY KEY (logid, objectid)
+    ) WITH bloom_filter_fp_chance = 0.01
+    AND comment = ''
+    AND default_time_to_live = 0
+    AND gc_grace_seconds = 864000
+    AND max_index_interval = 2048
+    AND memtable_flush_period_in_ms = 0
+    AND min_index_interval = 128
+    AND speculative_retry = '99.0PERCENTILE'
+    AND caching = {
+        'keys' : 'ALL',
+        'rows_per_partition' : 'NONE'
+    }
+    AND compaction = {
+        'bucket_high' : 1.5,
+        'bucket_low' : 0.5,
+        'class' : 'SizeTieredCompactionStrategy',
+        'enabled' : true,
+        'max_threshold' : 32,
+        'min_sstable_size' : 50,
+        'min_threshold' : 4,
+        'tombstone_compaction_interval' : 86400,
+        'tombstone_threshold' : 0.2,
+        'unchecked_tombstone_compaction' : false
+    };
+
+    CREATE TABLE IF NOT EXISTS lithpalette (
+        uid uuid,
+        lithname text,
+        lithpattern text,
+        lithforecolor text,
+        lithbackcolor text,
+        lithscale text,
+        lithlongnameoverride text,
+        lithshortnameoverride text,
+        lithpatternimage text,
+        palettename text static,
+        uidwell uuid static,
+        uidwellbore uuid static,
+        orderindex int,
+        PRIMARY KEY (uid, lithname)
+    );
+
+
+    CREATE TABLE IF NOT EXISTS realtimecache(
+          key text,
+          value text,
+          dtimlastchange timestamp,
+          PRIMARY KEY (key, value)
+    ) 
+    WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+
+    CREATE TABLE IF NOT EXISTS welldata (
+        wellid uuid,
+        wellboreid uuid,
+        category text,
+        filename text,
+        content text,
+        PRIMARY KEY (wellid, wellboreId, category, filename)
+    );
+
+    CREATE TABLE IF NOT EXISTS LogMnemonicGrowingObject (
+        rowkey text,
+        objectid uuid,
+        mnemonic text,
+        mnemonicId uuid,
+        object_klass text,
+        dtimlastchange timestamp,
+        wellboreid uuid,
+        name_well text, 
+        name_wellbore text, 
+        name_object text, 
+        wellid uuid,
+    PRIMARY KEY (rowkey, objectid, mnemonic))
+    WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+
+
+    CREATE TABLE IF NOT EXISTS OperatorsByDateTime (
+        rowkey text,    -- row key will be "operator". This table will have one row.
+        updtime timestamp,
+        operator text,
+        PRIMARY KEY (rowkey, updtime, Operator)
+    );
+
+    CREATE TABLE IF NOT EXISTS runsbywellbore (
+        wellboreid uuid,
+        run text,
+        wellid uuid static,
+        PRIMARY KEY (wellboreid, run)
+    ) WITH caching = {'keys':'NONE', 'rows_per_partition':'NONE'}
+    AND memtable_flush_period_in_ms = 3600;
+
+    CREATE TABLE IF NOT EXISTS datasetproperties(
+        wellboreid uuid,
+        run text,
+        record text,
+        type text,
+        variable text,
+        value text,
+        unitType text,
+        uom text,
+        datatype text,
+        wellid uuid static,
+        PRIMARY KEY (wellboreid, run, record, type, variable)
+    );
+
+    CREATE TABLE IF NOT EXISTS rts_data.log_depth_v2 (
+        tdkey text,
+        sensorid uuid,
+        variableid text,
+        type text,
+        activity text,
+        event_depth double,
+        event_time timestamp,
+        bitoffset_uom text static,
+        bitoffset_value double static,
+        datatype text static,
+        uom text static,
+        uom_class text static,
+        value text,
+        variable_friendly text static,
+        wellboreid uuid static,
+        wellid uuid static,
+        PRIMARY KEY ((tdkey, sensorid, variableid, type, activity), event_depth, event_time)
+    );
+
+    CREATE TABLE IF NOT EXISTS rts_data.log_time_v2 (
+        tdkey text,
+        sensorid uuid,
+        variableid text,
+        type text,
+        activity text,
+        event_time timestamp,
+        event_depth double,
+        bitoffset_uom text static,
+        bitoffset_value double static,
+        datatype text static,
+        uom text static,
+        uom_class text static,
+        value text,
+        variable_friendly text static,
+        wellboreid uuid static,
+        wellid uuid static,
+        PRIMARY KEY ((tdkey, sensorid, variableid, type, activity), event_time, event_depth)
+    );

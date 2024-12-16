@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- prometheus-ns.yaml
+
+
+helmCharts:
+  - name: prometheus
+    repo: oci://registry-1.docker.io/bitnamicharts
+    version: 1.4.0
+    includeCRDs: true
+    releaseName: prometheus
+    namespace: prometheus
+    valuesFile: values.yaml
