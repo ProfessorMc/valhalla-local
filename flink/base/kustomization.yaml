@@ -5,10 +5,10 @@ resources:
 - flink-ns.yaml
 
 
-# helmCharts:
-#   - name: flink
-#     repo: https://charts.bitnami.com/bitnami
-#     version: 1.4.0
-#     releaseName: flink
-#     namespace: flink
-#     valuesFile: values.yaml
+helmCharts:
+  - name: flink
+    repo: https://charts.bitnami.com/bitnami
+    version: 1.4.0
+    releaseName: flink
+    namespace: flink
+    valuesFile: values.yaml
